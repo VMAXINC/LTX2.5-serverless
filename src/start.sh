@@ -166,6 +166,13 @@ comfy-manager-set-mode offline || echo "worker-comfyui - Could not set ComfyUI-M
 # Allow operators to tweak verbosity; default is DEBUG.
 : "${COMFY_LOG_LEVEL:=DEBUG}"
 
+# Extra ComfyUI CLI args. ComfyUI sizes its RAM cache and pinned memory from
+# the *host's* RAM (hundreds of GB on a serverless node), not the container's
+# memory limit, so it keeps caching until the container is OOM-killed after a
+# few renders. Cap the cache and turn off pinned memory by default; override
+# (or set to an empty string) from the endpoint's environment variables.
+: "${COMFY_EXTRA_ARGS=--cache-ram 4 --disable-pinned-memory}"
+
 start_comfyui() {
     local listen_mode="$1"
     echo "worker-comfyui: Starting ComfyUI"
@@ -180,6 +187,13 @@ start_comfyui() {
 
     if [ "${listen_mode}" == "true" ]; then
         comfy_args+=(--listen)
+    fi
+
+    if [ -n "${COMFY_EXTRA_ARGS}" ]; then
+        local extra_args=()
+        read -r -a extra_args <<< "${COMFY_EXTRA_ARGS}"
+        comfy_args+=("${extra_args[@]}")
+        echo "worker-comfyui: Extra ComfyUI args: ${COMFY_EXTRA_ARGS}"
     fi
 
     "${comfy_args[@]}" &
