@@ -167,11 +167,40 @@ comfy-manager-set-mode offline || echo "worker-comfyui - Could not set ComfyUI-M
 : "${COMFY_LOG_LEVEL:=DEBUG}"
 
 # Extra ComfyUI CLI args. ComfyUI sizes its RAM cache and pinned memory from
-# the *host's* RAM (hundreds of GB on a serverless node), not the container's
-# memory limit, so it keeps caching until the container is OOM-killed after a
-# few renders. Cap the cache and turn off pinned memory by default; override
-# (or set to an empty string) from the endpoint's environment variables.
-: "${COMFY_EXTRA_ARGS=--cache-ram 4 --disable-pinned-memory}"
+# the *host's* RAM (its --cache-ram default keeps inactive results up to 100%
+# of system RAM, max 128 GB — hundreds of GB on a serverless node), not the
+# container's memory limit, so it keeps caching until the container is
+# OOM-killed after a few renders. Default: no result cache at all and no
+# pinned memory (slower repeat renders, but nothing accumulates between
+# jobs). Override — or set to an empty string — from the endpoint's
+# environment variables.
+: "${COMFY_EXTRA_ARGS=--cache-none --disable-pinned-memory}"
+
+# With PERSIST_WORKSPACE the ComfyUI that runs is the copy seeded onto the
+# network volume, which can be older than this image. Drop any flag that copy
+# doesn't know (with a warning) so an unknown flag never stops ComfyUI from
+# starting. Prints the kept args; values after a dropped flag go with it.
+filter_supported_comfy_args() {
+    local cli_args_file="${1}"
+    shift
+    local kept=() dropping=false arg
+    for arg in "$@"; do
+        if [[ "${arg}" == --* ]]; then
+            if [ -f "${cli_args_file}" ] && ! grep -qF -- "\"${arg}\"" "${cli_args_file}"; then
+                echo "worker-comfyui: WARNING: ComfyUI at ${cli_args_file%/comfy/cli_args.py} does not support ${arg}; dropping it" >&2
+                dropping=true
+                continue
+            fi
+            dropping=false
+        elif [ "${dropping}" = true ]; then
+            continue
+        fi
+        kept+=("${arg}")
+    done
+    if [ "${#kept[@]}" -gt 0 ]; then
+        printf '%s\n' "${kept[@]}"
+    fi
+}
 
 start_comfyui() {
     local listen_mode="$1"
@@ -190,11 +219,16 @@ start_comfyui() {
     fi
 
     if [ -n "${COMFY_EXTRA_ARGS}" ]; then
-        local extra_args=()
+        local extra_args=() supported=()
         read -r -a extra_args <<< "${COMFY_EXTRA_ARGS}"
-        comfy_args+=("${extra_args[@]}")
-        echo "worker-comfyui: Extra ComfyUI args: ${COMFY_EXTRA_ARGS}"
+        mapfile -t supported < <(filter_supported_comfy_args /comfyui/comfy/cli_args.py "${extra_args[@]}")
+        comfy_args+=("${supported[@]+"${supported[@]}"}")
+        echo "worker-comfyui: Extra ComfyUI args: ${supported[*]:-(none)} (requested: ${COMFY_EXTRA_ARGS})"
     fi
+
+    # the handler restarts ComfyUI with exactly this command line
+    # (COMFY_RESTART_EVERY_N_JOBS); NUL-separated so args may contain spaces
+    printf '%s\0' "${comfy_args[@]}" > "${COMFY_ARGS_FILE:-/tmp/comfyui.args}"
 
     "${comfy_args[@]}" &
     COMFY_PID="$!"

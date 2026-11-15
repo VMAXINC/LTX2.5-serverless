@@ -49,6 +49,7 @@ jobs:
         run: |
           python3 -m compileall -q \
             handler.py \
+            worker_runtime.py \
             frontend_app.py \
             ltx_payload_builder.py \
             workflow_support.py \
@@ -63,6 +64,7 @@ jobs:
             tests.test_ltx25_workflow \
             tests.test_verify_comfy_models \
             tests.test_workflow_support \
+            tests.test_worker_runtime \
             tests.test_frontend_app \
             tests.test_security_boundaries \
             -v
