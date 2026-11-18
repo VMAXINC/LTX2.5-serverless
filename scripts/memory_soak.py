@@ -44,8 +44,20 @@ def request(method: str, url: str, key: str, body: dict | None = None) -> dict:
         # Cloudflare in front of the API rejects urllib's default agent
         "User-Agent": "ltx25-memory-soak/1.0",
     })
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+    # A soak runs for many minutes; ride out short local network or DNS
+    # blips instead of losing every row measured so far. HTTP errors
+    # (bad key, bad endpoint) still fail immediately.
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            if attempt == 5:
+                raise
+            print(f"network error ({exc}); retrying", file=sys.stderr)
+            time.sleep(5 * (attempt + 1))
 
 
 def reseed(job: dict) -> dict:
