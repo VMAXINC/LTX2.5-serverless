@@ -25,6 +25,7 @@ from pathlib import Path
 from botocore.config import Config
 import redis.asyncio as redis
 
+import worker_runtime
 from workflow_support import (
     apply_input_filename_map,
     build_output_path,
@@ -528,6 +529,31 @@ async def handle_workflow_job(job_id: str, job_input: dict, start_time: float) -
             pass
 
 # --- 5. THE MASTER HANDLER ---
+#: jobs this worker process has started (memory telemetry + restart cadence)
+JOB_COUNTER = {"n": 0}
+RESTART_POLICY = worker_runtime.RestartPolicy()
+
+
+async def memory_snapshot(job_index: int, phase: str) -> dict:
+    """Container/ComfyUI/GPU memory, logged as one ``memstats`` line."""
+    try:
+        snap = await asyncio.to_thread(worker_runtime.memory_snapshot, job_index, phase)
+    except Exception as e:  # telemetry must never fail a job
+        snap = {"phase": phase, "job_index": job_index, "error": str(e)}
+    print(worker_runtime.log_line(snap), flush=True)
+    return snap
+
+
+def attach_memory(response: dict, before: dict, after: dict) -> dict:
+    response = dict(response)
+    memory = {"before": before, "after": after}
+    if isinstance(response.get("metadata"), dict):
+        response["metadata"] = {**response["metadata"], "memory": memory}
+    else:
+        response["memory"] = memory
+    return response
+
+
 async def handler(job: dict) -> dict:
     job_id = job.get('id', uuid.uuid4().hex)
     job_input = job.get('input', {})
@@ -535,7 +561,22 @@ async def handler(job: dict) -> dict:
 
     if job_input.get("health_check") is True:
         return {"status": "healthy", "service": "ltx-2.5-worker"}
-    
+
+    if RESTART_POLICY.take_pending():
+        logger.info(
+            f"[{job_id}] Restarting ComfyUI after {RESTART_POLICY.jobs_done} jobs "
+            f"(COMFY_RESTART_EVERY_N_JOBS={RESTART_POLICY.every})"
+        )
+        await memory_snapshot(JOB_COUNTER["n"], "before_restart")
+        await asyncio.to_thread(
+            worker_runtime.restart_comfyui, f"http://{COMFY_NODES[0]}/system_stats"
+        )
+        await memory_snapshot(JOB_COUNTER["n"], "after_restart")
+
+    JOB_COUNTER["n"] += 1
+    job_index = JOB_COUNTER["n"]
+    before = await memory_snapshot(job_index, "before")
+
     # TELEMETRY: Announce Job Start
     await redis_client.hset(f"job_status:{job_id}", mapping={"status": "initializing", "progress": "0%"})
     await redis_client.expire(f"job_status:{job_id}", 3600)
@@ -547,11 +588,17 @@ async def handler(job: dict) -> dict:
             response = await handle_custom_job(job_id, job_input, start_time)
 
         await redis_client.hset(f"job_status:{job_id}", mapping={"status": "completed"})
-        return response
+        return attach_memory(response, before, await memory_snapshot(job_index, "after"))
 
     except Exception as e:
         await redis_client.hset(f"job_status:{job_id}", mapping={"status": "failed", "error": str(e)})
-        return {"status": "error", "error": str(e)}
+        return attach_memory(
+            {"status": "error", "error": str(e)},
+            before,
+            await memory_snapshot(job_index, "after_error"),
+        )
+    finally:
+        RESTART_POLICY.job_finished()
 
 logger.info("Initializing Indro Serverless Engine V5 (GOD-TIER)...")
 runpod.serverless.start({"handler": handler})

@@ -11,6 +11,8 @@ The container is configured through environment variables. The model profile bak
 | `LTX_FRONTEND_ENABLED` | Start the bundled frontend on port `7777`. | `true` |
 | `PUBLIC_KEY` | Optional SSH public key. When set, SSH starts in the container. | unset |
 | `COMFY_LOG_LEVEL` | ComfyUI log level. | `DEBUG` |
+| `COMFY_EXTRA_ARGS` | Extra ComfyUI CLI flags. The default turns off the result cache and pinned memory so RAM does not accumulate across jobs (ComfyUI sizes both from the host's RAM, not the container limit). Flags the running ComfyUI does not know are dropped with a warning — with `PERSIST_WORKSPACE` that is the copy on the volume, which can be older than the image. Set to an empty string to use ComfyUI's defaults. | `--cache-none --disable-pinned-memory` |
+| `COMFY_RESTART_EVERY_N_JOBS` | Restart the ComfyUI process every N jobs, before the next job starts (a guard against memory that still accumulates). `0` disables it. | `0` |
 | `LTX25_MODEL_DISCOVERY_CHECK` | Fail startup unless preloaded LTX models are visible through ComfyUI's live model API. | `true` |
 | `COMFY_MODEL_DISCOVERY_TIMEOUT_SECONDS` | Maximum time to wait for live model discovery. | `120` |
 | `COMFY_MODEL_DISCOVERY_URL` | Local ComfyUI URL used by the startup acceptance check. | `http://127.0.0.1:8188` |

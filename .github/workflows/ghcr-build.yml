@@ -1,0 +1,49 @@
+name: Build and push to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "docker-bake target"
+        default: "ltx2-5-distilled-int8"
+        required: true
+      tag:
+        description: "image tag"
+        default: "memory-guard-cu130"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ltx25-worker
+        run: |
+          IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          docker buildx bake "${{ inputs.target }}" \
+            --set "${{ inputs.target }}.tags=${IMAGE}:${{ inputs.tag }}" \
+            --set "${{ inputs.target }}.labels.org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --push
+          echo "pushed ${IMAGE}:${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
